@@ -1,0 +1,5 @@
+streamlit==1.66.0
+plotly==7.1.0
+streamlit-autorefresh==1.0.1
+streamlit-shortcuts==1.2.1
+pytest==9.1.1

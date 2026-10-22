@@ -1,0 +1,31 @@
+﻿# Environnements et caches Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Donnees locales et bases de donnees
+.algolab/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Configuration locale et secrets
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Fichiers temporaires et sorties locales
+*.tmp
+*.temp
+*.log
+pytest-result.txt
+0
+
+# Parametres locaux de l'editeur
+.vscode/
