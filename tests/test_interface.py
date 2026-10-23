@@ -26,6 +26,8 @@ def _creer_profil_test(app, nom):
             next(field for field in app.text_input if field.label == "Code personnel").set_value(_CODE_TEST)
             next(button for button in app.button if button.label == "Déverrouiller").click().run()
         else:
+            recovery_code = ProgressionStore().issue_recovery_code(nom)
+            next(field for field in app.text_input if field.label == "Code de récupération à usage unique").set_value(recovery_code)
             next(field for field in app.text_input if field.label == "Nouveau code personnel à 6 chiffres").set_value(_CODE_TEST)
             next(field for field in app.text_input if field.label == "Confirmer le code personnel").set_value(_CODE_TEST)
             next(button for button in app.button if button.label == "Définir le code et ouvrir le profil").click().run()
@@ -62,6 +64,8 @@ def _changer_profil(app, nom):
         next(field for field in app.text_input if field.label == "Code personnel").set_value(_CODE_TEST)
         next(button for button in app.button if button.label == "Déverrouiller").click().run()
     else:
+        recovery_code = ProgressionStore().issue_recovery_code(nom)
+        next(field for field in app.text_input if field.label == "Code de récupération à usage unique").set_value(recovery_code)
         next(field for field in app.text_input if field.label == "Nouveau code personnel à 6 chiffres").set_value(_CODE_TEST)
         next(field for field in app.text_input if field.label == "Confirmer le code personnel").set_value(_CODE_TEST)
         next(button for button in app.button if button.label == "Définir le code et ouvrir le profil").click().run()

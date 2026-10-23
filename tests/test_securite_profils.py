@@ -1,4 +1,5 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import secrets
 
@@ -178,7 +179,8 @@ def test_migration_ancienne_base_preserve_historique(tmp_path):
 
     store = ProgressionStore(chemin)
     assert not store.profile_has_pin("Ada")
-    jeton = store.set_initial_pin("Ada", _PIN_ADA, _PIN_ADA)
+    code_recuperation = store.issue_recovery_code("Ada")
+    jeton = store.set_initial_pin("Ada", _PIN_ADA, _PIN_ADA, code_recuperation)
     assert store.is_authorized("Ada", jeton)
     assert store.profile("Ada")["xp"] == 27
     profil = store.profile("Ada")
@@ -186,6 +188,107 @@ def test_migration_ancienne_base_preserve_historique(tmp_path):
     assert next(succes for succes in profil["succes"] if succes["id"] == "sans_erreur")["debloque"]
     assert store.best_challenge_score("Ada", "Identification") == 92
     assert store.activity_history("Ada")[0]["date"] == "2020-01-01"
+
+
+def test_migration_refuse_code_absent_sans_modifier_le_profil(tmp_path):
+    store = ProgressionStore(tmp_path / "legacy.sqlite3")
+    store.record_exercise_success(
+        "Ada", "Débutant", {"nom_algorithme": "Tri à bulles", "type": "etat", "correcte": True}
+    )
+    xp_avant = store.profile("Ada")["xp"]
+
+    with pytest.raises(ValueError, match="récupération invalide"):
+        store.set_initial_pin("Ada", _PIN_ADA, _PIN_ADA, "")
+
+    assert not store.profile_has_pin("Ada")
+    assert store.profile("Ada")["xp"] == xp_avant
+    assert store.verify_pin("Ada", _PIN_ADA) is None
+
+
+def test_migration_refuse_code_invalide_sans_modifier_le_profil(tmp_path):
+    store = ProgressionStore(tmp_path / "legacy.sqlite3")
+    store.record_exercise_success(
+        "Ada", "Débutant", {"nom_algorithme": "Tri à bulles", "type": "etat", "correcte": True}
+    )
+    code_valide = store.issue_recovery_code("Ada")
+    faux_code = secrets.token_urlsafe(32)
+    assert faux_code != code_valide
+    xp_avant = store.profile("Ada")["xp"]
+
+    with pytest.raises(ValueError, match="récupération invalide"):
+        store.set_initial_pin("Ada", _PIN_ADA, _PIN_ADA, faux_code)
+
+    assert not store.profile_has_pin("Ada")
+    assert store.profile("Ada")["xp"] == xp_avant
+    assert store.verify_pin("Ada", _PIN_ADA) is None
+
+
+def test_code_recuperation_est_a_usage_unique(tmp_path):
+    store = ProgressionStore(tmp_path / "legacy.sqlite3")
+    store.ensure_profile("Ada")
+    code = store.issue_recovery_code("Ada")
+    token = store.set_initial_pin("Ada", _PIN_ADA, _PIN_ADA, code)
+
+    assert store.is_authorized("Ada", token)
+    with pytest.raises(ValueError, match="récupération invalide"):
+        store.set_initial_pin("Ada", _PIN_LIN, _PIN_LIN, code)
+    assert store.verify_pin("Ada", _PIN_ADA) is not None
+    assert store.verify_pin("Ada", _PIN_LIN) is None
+
+
+def test_code_recuperation_ne_peut_etre_consomme_qu_une_fois_en_concurrence(tmp_path):
+    store = ProgressionStore(tmp_path / "legacy.sqlite3")
+    store.ensure_profile("Ada")
+    code = store.issue_recovery_code("Ada")
+
+    def migrer(pin):
+        try:
+            return store.set_initial_pin("Ada", pin, pin, code)
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        resultats = list(pool.map(migrer, (_PIN_ADA, _PIN_LIN)))
+
+    jetons_valides = [jeton for jeton in resultats if jeton is not None]
+    assert len(jetons_valides) == 1
+    assert sum(store.verify_pin("Ada", pin) is not None for pin in (_PIN_ADA, _PIN_LIN)) == 1
+
+
+def test_code_recuperation_n_est_stocke_que_sous_forme_scrypt(tmp_path):
+    store = ProgressionStore(tmp_path / "legacy.sqlite3")
+    store.ensure_profile("Ada")
+    code = store.issue_recovery_code("Ada")
+
+    with sqlite3.connect(store.db_path) as connection:
+        verifier = connection.execute(
+            "SELECT recovery_verifier FROM profiles WHERE profile_id = 'ada'"
+        ).fetchone()[0]
+
+    assert verifier.startswith("scrypt$")
+    assert code not in verifier
+
+
+def test_attribution_code_refuse_profil_absent_ou_deja_protege(tmp_path):
+    store = ProgressionStore(tmp_path / "legacy.sqlite3")
+    with pytest.raises(ValueError, match="introuvable"):
+        store.issue_recovery_code("Ada")
+    assert store.profile_names() == []
+
+    store.create_profile("Lin", _PIN_LIN, _PIN_LIN)
+    with pytest.raises(ValueError, match="déjà un code personnel"):
+        store.issue_recovery_code("Lin")
+
+
+def test_reemission_invalide_le_code_precedent(tmp_path):
+    store = ProgressionStore(tmp_path / "legacy.sqlite3")
+    store.ensure_profile("Ada")
+    ancien = store.issue_recovery_code("Ada")
+    nouveau = store.issue_recovery_code("Ada", replace_existing=True)
+    assert nouveau != ancien
+    with pytest.raises(ValueError, match="récupération invalide"):
+        store.set_initial_pin("Ada", _PIN_ADA, _PIN_ADA, ancien)
+    assert store.profile_has_pin("Ada") is False
 
 
 def test_code_en_clair_absent_de_la_base(tmp_path):
@@ -328,11 +431,29 @@ def test_migration_interface_protege_profil_historique_sans_perte_xp(tmp_path):
     next(select for select in app.selectbox if select.label == "Profil").set_value("Ada").run()
 
     assert any("profil historique" in item.value for item in app.warning)
+    assert any(field.label == "Code de récupération à usage unique" for field in app.text_input)
+    next(field for field in app.text_input if field.label == "Nouveau code personnel à 6 chiffres").set_value(_PIN_LIN)
+    next(field for field in app.text_input if field.label == "Confirmer le code personnel").set_value(_PIN_LIN)
+    next(button for button in app.button if button.label == "Définir le code et ouvrir le profil").click().run(timeout=10)
+
+    assert not store.profile_has_pin("Ada")
+    assert not any(radio.label == "Navigation" for radio in app.radio)
+    assert all(_PIN_LIN != value for value in app.session_state.values())
+
+    code_recuperation = store.issue_recovery_code("Ada")
+    app = AppTest.from_file(_chemin_app()).run(timeout=10)
+    next(select for select in app.selectbox if select.label == "Profil").set_value("Ada").run()
+    next(field for field in app.text_input if field.label == "Code de récupération à usage unique").set_value(code_recuperation)
     next(field for field in app.text_input if field.label == "Nouveau code personnel à 6 chiffres").set_value(_PIN_LIN)
     next(field for field in app.text_input if field.label == "Confirmer le code personnel").set_value(_PIN_LIN)
     next(button for button in app.button if button.label == "Définir le code et ouvrir le profil").click().run(timeout=10)
 
     assert store.profile_has_pin("Ada")
     assert store.profile("Ada")["xp"] == xp_avant
-    assert all(value != _PIN_LIN for value in app.session_state.values())
+    assert all(value not in (_PIN_LIN, code_recuperation) for value in app.session_state.values())
+    assert all(code_recuperation not in item.value for item in app.error)
+    with sqlite3.connect(chemin) as connection:
+        assert connection.execute(
+            "SELECT recovery_verifier FROM profiles WHERE profile_id = 'ada'"
+        ).fetchone()[0] is None
     assert not app.exception

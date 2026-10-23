@@ -87,6 +87,7 @@ class ProgressionAccessGuard:
         "achievements", "set_title", "record_exercise_success",
         "record_exercise_result", "complete_exercise_session",
         "record_challenge_success", "record_manipulation_success",
+        "issue_recovery_code",
     }
 
     def __init__(self, store: Any, jeton_courant: Any):
@@ -210,6 +211,7 @@ class ProgressionStore:
                 ("pin_verifier", "TEXT"),
                 ("pin_failures", "INTEGER NOT NULL DEFAULT 0"),
                 ("pin_locked_until", "REAL NOT NULL DEFAULT 0"),
+                ("recovery_verifier", "TEXT"),
             ):
                 if nom_colonne not in colonnes_profil:
                     connection.execute(
@@ -370,22 +372,63 @@ class ProgressionStore:
             )
         return self._creer_jeton(profile_id)
 
-    def set_initial_pin(self, nom: str, pin: str, confirmation: str) -> str:
-        profile_id, display_name = normaliser_profil(nom)
-        self._valider_pin(pin, confirmation)
-        verifier = self._deriver_verificateur_pin(pin)
+    def issue_recovery_code(self, nom: str, *, replace_existing: bool = False) -> str:
+        """Issue a one-time recovery code for an existing legacy profile.
+
+        This method is intended only for the local administrator CLI. The
+        returned plaintext must be delivered out of band and is never stored.
+        """
+        profile_id, _ = normaliser_profil(nom)
+        code = secrets.token_urlsafe(32)
+        verifier = self._deriver_verificateur_pin(code)
         with self._transaction() as connection:
-            self._ensure_profile(connection, profile_id, display_name)
             row = connection.execute(
-                "SELECT pin_verifier FROM profiles WHERE profile_id = ?",
+                "SELECT pin_verifier, recovery_verifier FROM profiles WHERE profile_id = ?",
                 (profile_id,),
             ).fetchone()
+            if row is None:
+                raise ValueError("Le profil historique est introuvable.")
             if row["pin_verifier"] is not None:
                 raise ValueError("Ce profil possède déjà un code personnel.")
+            if row["recovery_verifier"] is not None and not replace_existing:
+                raise ValueError("Un code de récupération existe déjà pour ce profil.")
             connection.execute(
-                "UPDATE profiles SET pin_verifier = ?, pin_failures = 0, "
-                "pin_locked_until = 0 WHERE profile_id = ?",
+                "UPDATE profiles SET recovery_verifier = ? WHERE profile_id = ?",
                 (verifier, profile_id),
+            )
+        return code
+
+    def set_initial_pin(
+        self,
+        nom: str,
+        pin: str,
+        confirmation: str,
+        recovery_code: str,
+    ) -> str:
+        profile_id, _ = normaliser_profil(nom)
+        self._valider_pin(pin, confirmation)
+        if (
+            not isinstance(recovery_code, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{43}", recovery_code) is None
+        ):
+            raise ValueError("Code de récupération invalide ou déjà utilisé.")
+        pin_verifier = self._deriver_verificateur_pin(pin)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT pin_verifier, recovery_verifier FROM profiles WHERE profile_id = ?",
+                (profile_id,),
+            ).fetchone()
+            if (
+                row is None
+                or row["pin_verifier"] is not None
+                or row["recovery_verifier"] is None
+                or not self._verifier_pin(recovery_code, row["recovery_verifier"])
+            ):
+                raise ValueError("Code de récupération invalide ou déjà utilisé.")
+            connection.execute(
+                "UPDATE profiles SET pin_verifier = ?, recovery_verifier = NULL, pin_failures = 0, "
+                "pin_locked_until = 0 WHERE profile_id = ?",
+                (pin_verifier, profile_id),
             )
         return self._creer_jeton(profile_id)
 

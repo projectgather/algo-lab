@@ -57,7 +57,19 @@ SQLite stocke les profils, les événements de récompense et les succès dans `
 
 Les événements et récompenses de défi ou de manipulation ne sont enregistrés qu'une fois par activité, algorithme et difficulté; les replays ne sont donc pas comptés à nouveau. Les tentatives échouées ne sont pas persistées, ce qui ne permet pas de calculer un taux de réussite global. L'historique du profil reflète uniquement les événements effectivement enregistrés dans SQLite.
 
-Chaque profil est déverrouillé par un code personnel de six chiffres. La base conserve un vérificateur scrypt avec sel aléatoire, jamais le code en clair; cinq essais incorrects entraînent un verrouillage temporaire. Les anciens profils gardent leur progression et doivent définir un code avant de retrouver l'accès. Comme aucun secret n'existait auparavant, la première définition du code ne peut pas vérifier rétroactivement l'identité du propriétaire historique.
+Chaque profil est déverrouillé par un code personnel de six chiffres. La base conserve un vérificateur scrypt avec sel aléatoire, jamais le code en clair; cinq essais incorrects entraînent un verrouillage temporaire. Les anciens profils gardent leur progression et ne peuvent être récupérés qu'avec un code de récupération individuel attribué par l'administrateur après vérification du propriétaire.
+
+### Migration sécurisée des profils historiques
+
+Un profil historique sans PIN ne peut être migré qu'avec un code de récupération aléatoire à usage unique. L'administrateur vérifie d'abord l'identité du propriétaire hors de l'application, puis ouvre un terminal local privé sur la machine qui héberge la base :
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\attribuer_code_recuperation.py "Nom du profil"
+```
+
+Le code est affiché une seule fois dans ce terminal. Transmettez-le au propriétaire par un canal privé distinct. N'exécutez pas la commande avec redirection, transcription du terminal ou capture de sortie. Le code n'est ni conservé en clair dans SQLite, ni écrit dans un fichier ou un journal. Le propriétaire le saisit dans le champ masqué de l'interface, avec son nouveau PIN. Après réussite, le vérificateur de récupération est consommé dans la même transaction que l'enregistrement du PIN. Une réémission par l'administrateur invalide le code précédent (`--replace`).
+
+Le démarrage ajoute la colonne `recovery_verifier` si elle manque; cela ne modifie ni ne supprime les profils ou leur progression. Les profils historiques sans code restent présents et inaccessibles à la migration jusqu'à vérification et attribution par l'administrateur. N'exécutez pas l'outil d'administration contre une base publique ou distante.
 
 L'autorisation est liée au profil dans la session et contrôlée côté serveur avant les lectures et écritures de progression. Le verrouillage efface cette autorisation et les activités en cours. Cette protection convient à une installation locale contrôlée, mais ne remplace pas une authentification serveur : une personne ayant accès au processus ou directement au fichier SQLite peut contourner les contrôles de l'interface et accéder aux données locales. La base n'est pas synchronisée.
 

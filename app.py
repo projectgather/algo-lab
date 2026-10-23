@@ -150,15 +150,19 @@ def _creer_profil(nom, pin, confirmation):
         st.session_state["profil_auth_erreur"] = str(erreur)
 
 
-def _definir_code_historique(nom, pin, confirmation):
+def _definir_code_historique(nom, pin, confirmation, code_recuperation):
     try:
-        jeton = progression_store.set_initial_pin(nom, pin, confirmation)
+        jeton = progression_store.set_initial_pin(
+            nom, pin, confirmation, code_recuperation
+        )
         st.session_state["profil_nom"] = nom
         st.session_state["profil_jeton"] = jeton
         st.session_state.pop("profil_auth_erreur", None)
         st.rerun()
-    except (OSError, sqlite3.Error, ValueError) as erreur:
-        st.session_state["profil_auth_erreur"] = str(erreur)
+    except (OSError, sqlite3.Error, ValueError):
+        st.session_state["profil_auth_erreur"] = (
+            "Code de récupération invalide ou migration indisponible."
+        )
 
 
 def _deverrouiller_profil(nom, pin):
@@ -234,11 +238,16 @@ def afficher_ecran_authentification():
                 _deverrouiller_profil(nom, pin_connexion)
         else:
             st.warning(
-                "Ce profil historique n'a pas encore de code. Définissez-en un "
-                "pour le protéger. Cette installation locale ne peut pas vérifier "
-                "rétroactivement l'identité de son propriétaire."
+                "Ce profil historique est verrouillé. Sa migration exige un code "
+                "de récupération individuel, attribué par l'administrateur après "
+                "vérification du propriétaire."
             )
             with st.form("profil_historique_form", clear_on_submit=True):
+                code_recuperation = st.text_input(
+                    "Code de récupération à usage unique",
+                    type="password",
+                    max_chars=43,
+                )
                 pin_historique = st.text_input(
                     "Nouveau code personnel à 6 chiffres",
                     type="password",
@@ -254,7 +263,8 @@ def afficher_ecran_authentification():
                 )
             if code_historique_soumis:
                 _definir_code_historique(
-                    nom, pin_historique, confirmation_historique
+                    nom, pin_historique, confirmation_historique,
+                    code_recuperation,
                 )
 
     erreur = st.session_state.pop("profil_auth_erreur", None)
